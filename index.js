@@ -3,6 +3,7 @@ remoteMain.initialize()
 
 // Requirements
 const { app, BrowserWindow, ipcMain, Menu, shell } = require('electron')
+const http                               = require('http')
 const autoUpdater                       = require('electron-updater').autoUpdater
 const ejse                              = require('ejs-electron')
 const fs                                = require('fs')
@@ -109,60 +110,68 @@ ipcMain.handle(SHELL_OPCODE.TRASH_ITEM, async (event, ...args) => {
 app.disableHardwareAcceleration()
 
 
-const REDIRECT_URI_PREFIX = 'https://login.microsoftonline.com/common/oauth2/nativeclient?'
-
 // Microsoft Auth Login
-let msftAuthWindow
-let msftAuthSuccess
-let msftAuthViewSuccess
-let msftAuthViewOnClose
-ipcMain.on(MSFT_OPCODE.OPEN_LOGIN, (ipcEvent, ...arguments_) => {
-    if (msftAuthWindow) {
-        ipcEvent.reply(MSFT_OPCODE.REPLY_LOGIN, MSFT_REPLY_TYPE.ERROR, MSFT_ERROR.ALREADY_OPEN, msftAuthViewOnClose)
+let msftAuthServer
+let msftAuthTimeout
+/**
+ * Launch the Microsoft OAuth flow in the user's default browser and listen for
+ * the redirect on a temporary local HTTP server. The resulting query
+ * parameters are relayed back to the renderer and all temporary resources are
+ * cleaned up on completion or error.
+ */
+ipcMain.on(MSFT_OPCODE.OPEN_LOGIN, (ipcEvent) => {
+    if (msftAuthServer) {
+        ipcEvent.reply(MSFT_OPCODE.REPLY_LOGIN, MSFT_REPLY_TYPE.ERROR, MSFT_ERROR.ALREADY_OPEN)
         return
     }
-    msftAuthSuccess = false
-    msftAuthViewSuccess = arguments_[0]
-    msftAuthViewOnClose = arguments_[1]
-    msftAuthWindow = new BrowserWindow({
-        title: LangLoader.queryJS('index.microsoftLoginTitle'),
-        backgroundColor: '#222222',
-        width: 520,
-        height: 600,
-        frame: true,
-        icon: getPlatformIcon('SealCircle')
-    })
 
-    msftAuthWindow.on('closed', () => {
-        msftAuthWindow = undefined
-    })
-
-    msftAuthWindow.on('close', () => {
-        if(!msftAuthSuccess) {
-            ipcEvent.reply(MSFT_OPCODE.REPLY_LOGIN, MSFT_REPLY_TYPE.ERROR, MSFT_ERROR.NOT_FINISHED, msftAuthViewOnClose)
+    /**
+     * Dispose of the temporary authentication server and timeout.
+     */
+    const cleanup = () => {
+        if (msftAuthTimeout) {
+            clearTimeout(msftAuthTimeout)
+            msftAuthTimeout = null
         }
-    })
+        if (msftAuthServer) {
+            msftAuthServer.close()
+            msftAuthServer = null
+        }
+    }
 
-    msftAuthWindow.webContents.on('did-navigate', (_, uri) => {
-        if (uri.startsWith(REDIRECT_URI_PREFIX)) {
-            let queries = uri.substring(REDIRECT_URI_PREFIX.length).split('#', 1).toString().split('&')
-            let queryMap = {}
-
-            queries.forEach(query => {
-                const [name, value] = query.split('=')
-                queryMap[name] = decodeURI(value)
+    msftAuthServer = http.createServer((req, res) => {
+        if (req.url.startsWith('/auth')) {
+            const urlObj = new URL(req.url, `http://localhost:${msftAuthServer.address().port}`)
+            const queryMap = {}
+            urlObj.searchParams.forEach((value, key) => {
+                queryMap[key] = value
             })
 
-            ipcEvent.reply(MSFT_OPCODE.REPLY_LOGIN, MSFT_REPLY_TYPE.SUCCESS, queryMap, msftAuthViewSuccess)
+            res.writeHead(200, { 'Content-Type': 'text/html' })
+            res.end('<html><body><script>window.close()</script></body></html>')
 
-            msftAuthSuccess = true
-            msftAuthWindow.close()
-            msftAuthWindow = null
+            ipcEvent.reply(MSFT_OPCODE.REPLY_LOGIN, MSFT_REPLY_TYPE.SUCCESS, queryMap)
+            cleanup()
+        } else {
+            res.writeHead(404)
+            res.end()
         }
     })
 
-    msftAuthWindow.removeMenu()
-    msftAuthWindow.loadURL(`https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize?prompt=select_account&client_id=${AZURE_CLIENT_ID}&response_type=code&scope=XboxLive.signin%20offline_access&redirect_uri=https://login.microsoftonline.com/common/oauth2/nativeclient`)
+    msftAuthServer.listen(0, '127.0.0.1', () => {
+        const port = msftAuthServer.address().port
+        shell.openExternal(`https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize?prompt=select_account&client_id=${AZURE_CLIENT_ID}&response_type=code&scope=XboxLive.signin%20offline_access&redirect_uri=http://localhost:${port}/auth`)
+    })
+
+    msftAuthServer.on('error', () => {
+        ipcEvent.reply(MSFT_OPCODE.REPLY_LOGIN, MSFT_REPLY_TYPE.ERROR, MSFT_ERROR.NOT_FINISHED)
+        cleanup()
+    })
+
+    msftAuthTimeout = setTimeout(() => {
+        ipcEvent.reply(MSFT_OPCODE.REPLY_LOGIN, MSFT_REPLY_TYPE.ERROR, MSFT_ERROR.NOT_FINISHED)
+        cleanup()
+    }, 120000)
 })
 
 // Microsoft Auth Logout
