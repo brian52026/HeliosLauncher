@@ -10,6 +10,10 @@ let loginOptionsViewOnLoginCancel
 let loginOptionsViewOnCancel
 let loginOptionsViewCancelHandler
 
+/**
+ * Toggle visibility of the cancel button in the login options view.
+ * @param {boolean} val - Whether the cancel button should be shown.
+ */
 function loginOptionsCancelEnabled(val){
     if(val){
         $(loginOptionsCancelContainer).show()
@@ -19,12 +23,10 @@ function loginOptionsCancelEnabled(val){
 }
 
 loginOptionMicrosoft.onclick = (e) => {
+    msftLoginViewOnSuccess = loginOptionsViewOnLoginSuccess
+    msftLoginViewOnClose = loginOptionsViewOnLoginCancel
     switchView(getCurrentView(), VIEWS.waiting, 500, 500, () => {
-        ipcRenderer.send(
-            MSFT_OPCODE.OPEN_LOGIN,
-            loginOptionsViewOnLoginSuccess,
-            loginOptionsViewOnLoginCancel
-        )
+        ipcRenderer.send(MSFT_OPCODE.OPEN_LOGIN)
     })
 }
 

@@ -9,6 +9,9 @@ const settingsState = {
     invalid: new Set()
 }
 
+let msftLoginViewOnSuccess
+let msftLoginViewOnClose
+
 function bindSettingsSelect(){
     for(let ele of document.getElementsByClassName('settingsSelectContainer')) {
         const selectedDiv = ele.getElementsByClassName('settingsSelectSelected')[0]
@@ -352,21 +355,32 @@ document.getElementById('settingsAddMojangAccount').onclick = (e) => {
 }
 
 // Bind the add microsoft account button.
+/**
+ * Initiate the Microsoft account sign-in flow from the settings page.
+ * The renderer requests the main process to start the OAuth sequence and
+ * waits on the reply channel for the resulting authorization code.
+ */
 document.getElementById('settingsAddMicrosoftAccount').onclick = (e) => {
+    msftLoginViewOnSuccess = VIEWS.settings
+    msftLoginViewOnClose = VIEWS.settings
     switchView(getCurrentView(), VIEWS.waiting, 500, 500, () => {
-        ipcRenderer.send(MSFT_OPCODE.OPEN_LOGIN, VIEWS.settings, VIEWS.settings)
+        ipcRenderer.send(MSFT_OPCODE.OPEN_LOGIN)
     })
 }
 
 // Bind reply for Microsoft Login.
-ipcRenderer.on(MSFT_OPCODE.REPLY_LOGIN, (_, ...arguments_) => {
-    if (arguments_[0] === MSFT_REPLY_TYPE.ERROR) {
+/**
+ * Handle responses from the Microsoft login flow. On success the retrieved
+ * authorization code is used to add the account. On error or cancellation the
+ * appropriate feedback is displayed to the user.
+ */
+ipcRenderer.on(MSFT_OPCODE.REPLY_LOGIN, (_, replyType, data) => {
+    if (replyType === MSFT_REPLY_TYPE.ERROR) {
 
-        const viewOnClose = arguments_[2]
-        console.log(arguments_)
+        const viewOnClose = msftLoginViewOnClose
         switchView(getCurrentView(), viewOnClose, 500, 500, () => {
 
-            if(arguments_[1] === MSFT_ERROR.NOT_FINISHED) {
+            if(data === MSFT_ERROR.NOT_FINISHED) {
                 // User cancelled.
                 msftLoginLogger.info('Login cancelled by user.')
                 return
@@ -383,15 +397,15 @@ ipcRenderer.on(MSFT_OPCODE.REPLY_LOGIN, (_, ...arguments_) => {
             })
             toggleOverlay(true)
         })
-    } else if(arguments_[0] === MSFT_REPLY_TYPE.SUCCESS) {
-        const queryMap = arguments_[1]
-        const viewOnClose = arguments_[2]
+    } else if(replyType === MSFT_REPLY_TYPE.SUCCESS) {
+        const queryMap = data
+        const viewOnClose = msftLoginViewOnSuccess
 
         // Error from request to Microsoft.
         if (Object.prototype.hasOwnProperty.call(queryMap, 'error')) {
             switchView(getCurrentView(), viewOnClose, 500, 500, () => {
                 // TODO Dont know what these errors are. Just show them I guess.
-                // This is probably if you messed up the app registration with Azure.      
+                // This is probably if you messed up the app registration with Azure.
                 let error = queryMap.error // Error might be 'access_denied' ?
                 let errorDesc = queryMap.error_description
                 console.log('Error getting authCode, is Azure application registered correctly?')
